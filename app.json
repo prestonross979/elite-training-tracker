@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Elite Gym Tracker",
+    "slug": "elite-gym-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#09090b"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#09090b"
+      }
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
