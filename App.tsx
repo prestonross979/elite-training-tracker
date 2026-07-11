@@ -5,7 +5,7 @@ import { PROGRAM, PHASES } from './src/program';
 import { ExerciseLog, getRecommendation, todayName } from './src/logic';
 import { StatusBar } from 'expo-status-bar';
 
-type RootTab = 'workout' | 'weight' | 'coach' | 'settings';
+type RootTab = 'workout' | 'history' | 'weight' | 'coach' | 'settings';
 
 type AppState = {
   phase: typeof PHASES[number]['key'];
@@ -15,18 +15,33 @@ type AppState = {
   logs: Record<string, ExerciseLog[]>;
   weighIns: { date: string; weight: string }[];
   coachNotes: string;
+  history: {
+    date: string;
+    day: string;
+    title: string;
+    logs: ExerciseLog[];
+    notes: string;
+  }[];
 };
 
-const STORAGE_KEY = 'elite-gym-tracker-expo-v1';
+const STORAGE_KEY = 'elite-gym-tracker-expo-v2';
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
+}
 
 function createDefaultState(): AppState {
   const logs: Record<string, ExerciseLog[]> = {};
+
   PROGRAM.forEach((day) => {
     logs[day.day] = day.exercises.map((exercise) => ({
       name: exercise.name,
       completed: false,
       notes: '',
-      sets: Array.from({ length: exercise.sets }).map(() => ({ weight: '', reps: '' })),
+      sets: Array.from({ length: exercise.sets }).map(() => ({
+        weight: '',
+        reps: '',
+      })),
     }));
   });
 
@@ -38,7 +53,43 @@ function createDefaultState(): AppState {
     logs,
     weighIns: [{ date: new Date().toISOString().slice(0, 10), weight: '' }],
     coachNotes: '',
+    history: [],
   };
+}
+
+function normalizeState(saved: Partial<AppState> | null): AppState {
+  const base = createDefaultState();
+
+  if (!saved) return base;
+
+  const merged: AppState = {
+    ...base,
+    ...saved,
+    logs: saved.logs ?? base.logs,
+    weighIns: saved.weighIns ?? base.weighIns,
+    coachNotes: saved.coachNotes ?? '',
+    history: saved.history ?? [],
+    selectedDay: saved.selectedDay ?? base.selectedDay,
+    phase: saved.phase ?? base.phase,
+  };
+
+  PROGRAM.forEach((day) => {
+    if (!merged.logs[day.day]) {
+      merged.logs[day.day] = base.logs[day.day];
+    }
+
+    day.exercises.forEach((exercise, index) => {
+      if (!merged.logs[day.day][index]) {
+        merged.logs[day.day][index] = base.logs[day.day][index];
+      }
+
+      if (!merged.logs[day.day][index].sets) {
+        merged.logs[day.day][index].sets = base.logs[day.day][index].sets;
+      }
+    });
+  });
+
+  return merged;
 }
 
 export default function App() {
@@ -47,9 +98,13 @@ export default function App() {
   const [openExercise, setOpenExercise] = useState<number | null>(null);
 
   useEffect(() => {
-    AsyncStorage.getItem(STORAGE_KEY).then((raw) => {
-      if (raw) setState(JSON.parse(raw));
-    }).catch(() => {});
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((raw) => {
+        if (raw) {
+          setState(normalizeState(JSON.parse(raw)));
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -61,33 +116,47 @@ export default function App() {
     [state.selectedDay]
   );
 
-  const selectedLogs = state.logs[state.selectedDay] ?? [];
+  const selectedLogs = state.logs?.[state.selectedDay] ?? [];
   const currentPhase = PHASES.find((p) => p.key === state.phase) ?? PHASES[0];
 
   const completion = useMemo(() => {
     let total = 0;
     let complete = 0;
+
     PROGRAM.forEach((day) => {
       if (day.phase === 'recovery') return;
-      (state.logs[day.day] ?? []).forEach((exercise) => {
+
+      (state.logs?.[day.day] ?? []).forEach((exercise) => {
         total += 1;
         if (exercise.completed) complete += 1;
       });
     });
+
     return total ? Math.round((complete / total) * 100) : 0;
   }, [state.logs]);
 
-  const updateSet = (exerciseIndex: number, setIndex: number, field: 'weight' | 'reps', value: string) => {
+  const updateSet = (
+    exerciseIndex: number,
+    setIndex: number,
+    field: 'weight' | 'reps',
+    value: string
+  ) => {
     setState((prev) => {
-      const next = structuredClone(prev);
+      const next = clone(prev);
+      next.logs[next.selectedDay] = next.logs[next.selectedDay] ?? [];
       next.logs[next.selectedDay][exerciseIndex].sets[setIndex][field] = value;
       return next;
     });
   };
 
-  const updateExercise = (exerciseIndex: number, field: 'completed' | 'notes', value: boolean | string) => {
+  const updateExercise = (
+    exerciseIndex: number,
+    field: 'completed' | 'notes',
+    value: boolean | string
+  ) => {
     setState((prev) => {
-      const next = structuredClone(prev);
+      const next = clone(prev);
+      next.logs[next.selectedDay] = next.logs[next.selectedDay] ?? [];
       (next.logs[next.selectedDay][exerciseIndex] as any)[field] = value;
       return next;
     });
@@ -95,10 +164,31 @@ export default function App() {
 
   const markDayComplete = () => {
     setState((prev) => {
-      const next = structuredClone(prev);
-      next.logs[next.selectedDay] = next.logs[next.selectedDay].map((x) => ({ ...x, completed: true }));
+      const next = clone(prev);
+      const dayLogs = next.logs[next.selectedDay] ?? [];
+
+      next.logs[next.selectedDay] = dayLogs.map((x) => ({
+        ...x,
+        completed: true,
+      }));
+
+      const dayInfo = PROGRAM.find((d) => d.day === next.selectedDay) ?? PROGRAM[0];
+
+      next.history = [
+        {
+          date: new Date().toISOString().slice(0, 10),
+          day: dayInfo.day,
+          title: dayInfo.title,
+          logs: clone(next.logs[next.selectedDay]),
+          notes: next.coachNotes ?? '',
+        },
+        ...(next.history ?? []),
+      ];
+
       return next;
     });
+
+    Alert.alert('Workout Saved', 'Your workout has been added to your history.');
   };
 
   const resetAll = () => {
@@ -121,21 +211,30 @@ export default function App() {
       `Weekly completion: ${completion}%`,
       "Today's logged performance:",
     ];
+
     selectedLogs.forEach((exercise) => {
-      const sets = exercise.sets.map((s, i) => `Set ${i + 1}: ${s.weight || '-'} x ${s.reps || '-'}`).join(', ');
+      const sets = (exercise.sets ?? [])
+        .map((s, i) => `Set ${i + 1}: ${s.weight || '-'} x ${s.reps || '-'}`)
+        .join(', ');
+
       lines.push(`- ${exercise.name}: ${sets}. Notes: ${exercise.notes || 'none'}`);
     });
+
     lines.push(`Overall notes: ${state.coachNotes || 'none'}`);
     lines.push('Tell me what to adjust for exercise selection, volume, progression, and recovery.');
+
     return lines.join('\n');
   }, [state, selectedDay, selectedLogs, currentPhase.label, completion]);
+
+  const tabs: RootTab[] = ['workout', 'history', 'weight', 'coach', 'settings'];
 
   return (
     <SafeAreaView style={styles.app}>
       <StatusBar style="light" />
+
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.hero}>
-          <Text style={styles.title}>Elite Gym Tracker</Text>
+          <Text style={styles.title}>Elite Training Tracker</Text>
           <Text style={styles.subtle}>Offline workout log + progression calculator</Text>
 
           <View style={styles.row}>
@@ -164,6 +263,7 @@ export default function App() {
                 onChangeText={(athleteName) => setState((p) => ({ ...p, athleteName }))}
               />
             </View>
+
             <View style={styles.fieldHalf}>
               <Text style={styles.label}>Bodyweight</Text>
               <TextInput
@@ -181,6 +281,7 @@ export default function App() {
             <Pressable style={styles.primaryButton} onPress={markDayComplete}>
               <Text style={styles.primaryButtonText}>Complete Day</Text>
             </Pressable>
+
             <Pressable style={styles.secondaryButton} onPress={resetAll}>
               <Text style={styles.secondaryButtonText}>Reset</Text>
             </Pressable>
@@ -188,9 +289,15 @@ export default function App() {
         </View>
 
         <View style={styles.nav}>
-          {(['workout', 'weight', 'coach', 'settings'] as RootTab[]).map((item) => (
-            <Pressable key={item} style={[styles.navItem, tab === item && styles.navItemActive]} onPress={() => setTab(item)}>
-              <Text style={[styles.navText, tab === item && styles.navTextActive]}>{item}</Text>
+          {tabs.map((item) => (
+            <Pressable
+              key={item}
+              style={[styles.navItem, tab === item && styles.navItemActive]}
+              onPress={() => setTab(item)}
+            >
+              <Text style={[styles.navText, tab === item && styles.navTextActive]}>
+                {item}
+              </Text>
             </Pressable>
           ))}
         </View>
@@ -220,20 +327,32 @@ export default function App() {
                   <Text style={styles.cardTitle}>{selectedDay.day}</Text>
                   <Text style={styles.subtle}>{selectedDay.title}</Text>
                 </View>
-                <Text style={styles.badge}>{selectedLogs.filter((x) => x.completed).length}/{selectedLogs.length}</Text>
+
+                <Text style={styles.badge}>
+                  {selectedLogs.filter((x) => x.completed).length}/{selectedLogs.length}
+                </Text>
               </View>
 
               {selectedDay.exercises.map((exercise, exerciseIndex) => {
                 const log = selectedLogs[exerciseIndex];
                 const isOpen = openExercise === exerciseIndex;
+
+                if (!log) return null;
+
                 return (
                   <View key={exercise.name} style={styles.exerciseCard}>
                     <Pressable onPress={() => setOpenExercise(isOpen ? null : exerciseIndex)}>
                       <View style={styles.cardHeader}>
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.exerciseTitle}>{log?.completed ? '✅ ' : ''}{exercise.name}</Text>
-                          <Text style={styles.subtle}>{exercise.sets} sets • {exercise.repRange}</Text>
+                          <Text style={styles.exerciseTitle}>
+                            {log.completed ? '✅ ' : ''}
+                            {exercise.name}
+                          </Text>
+                          <Text style={styles.subtle}>
+                            {exercise.sets} sets • {exercise.repRange}
+                          </Text>
                         </View>
+
                         <Text style={styles.subtle}>{isOpen ? 'Hide' : 'Open'}</Text>
                       </View>
                     </Pressable>
@@ -245,9 +364,10 @@ export default function App() {
                           <Text style={styles.bodyText}>{getRecommendation(exercise, log)}</Text>
                         </View>
 
-                        {log.sets.map((set, setIndex) => (
+                        {(log.sets ?? []).map((set, setIndex) => (
                           <View key={setIndex} style={styles.setRow}>
                             <Text style={styles.setLabel}>Set {setIndex + 1}</Text>
+
                             <TextInput
                               style={styles.setInput}
                               placeholder="Weight"
@@ -256,6 +376,7 @@ export default function App() {
                               value={set.weight}
                               onChangeText={(value) => updateSet(exerciseIndex, setIndex, 'weight', value)}
                             />
+
                             <TextInput
                               style={styles.setInput}
                               placeholder="Reps"
@@ -280,7 +401,9 @@ export default function App() {
                           style={[styles.completeExercise, log.completed && styles.completeExerciseDone]}
                           onPress={() => updateExercise(exerciseIndex, 'completed', !log.completed)}
                         >
-                          <Text style={styles.primaryButtonText}>{log.completed ? 'Completed' : 'Mark Complete'}</Text>
+                          <Text style={styles.primaryButtonText}>
+                            {log.completed ? 'Completed' : 'Mark Complete'}
+                          </Text>
                         </Pressable>
                       </View>
                     )}
@@ -291,12 +414,53 @@ export default function App() {
           </View>
         )}
 
+        {tab === 'history' && (
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Workout History</Text>
+            <Text style={styles.subtle}>Saved completed workouts from this device.</Text>
+
+            {(state.history ?? []).length === 0 ? (
+              <Text style={styles.bodyText}>No workouts saved yet.</Text>
+            ) : (
+              (state.history ?? []).map((workout, index) => (
+                <View key={`${workout.date}-${index}`} style={styles.weighInCard}>
+                  <Text style={styles.exerciseTitle}>
+                    {workout.date} • {workout.day}
+                  </Text>
+
+                  <Text style={styles.subtle}>{workout.title}</Text>
+
+                  {(workout.logs ?? []).map((exercise) => (
+                    <View key={exercise.name} style={{ marginTop: 10 }}>
+                      <Text style={styles.label}>{exercise.name}</Text>
+
+                      <Text style={styles.bodyText}>
+                        {(exercise.sets ?? [])
+                          .map((set, i) => `Set ${i + 1}: ${set.weight || '-'} x ${set.reps || '-'}`)
+                          .join(' | ')}
+                      </Text>
+
+                      {exercise.notes ? (
+                        <Text style={styles.subtle}>Notes: {exercise.notes}</Text>
+                      ) : null}
+                    </View>
+                  ))}
+
+                  {workout.notes ? (
+                    <Text style={styles.subtle}>Coach notes: {workout.notes}</Text>
+                  ) : null}
+                </View>
+              ))
+            )}
+          </View>
+        )}
+
         {tab === 'weight' && (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Weight Log</Text>
             <Text style={styles.subtle}>Track bodyweight separately from daily workout weight.</Text>
 
-            {state.weighIns.map((row, index) => (
+            {(state.weighIns ?? []).map((row, index) => (
               <View key={index} style={styles.weighInCard}>
                 <Text style={styles.label}>Date</Text>
                 <TextInput
@@ -306,7 +470,7 @@ export default function App() {
                   value={row.date}
                   onChangeText={(date) => {
                     setState((prev) => {
-                      const next = structuredClone(prev);
+                      const next = clone(prev);
                       next.weighIns[index].date = date;
                       return next;
                     });
@@ -324,7 +488,7 @@ export default function App() {
                   value={row.weight}
                   onChangeText={(weight) => {
                     setState((prev) => {
-                      const next = structuredClone(prev);
+                      const next = clone(prev);
                       next.weighIns[index].weight = weight;
                       return next;
                     });
@@ -335,7 +499,15 @@ export default function App() {
 
             <Pressable
               style={styles.secondaryButtonFull}
-              onPress={() => setState((p) => ({ ...p, weighIns: [...p.weighIns, { date: new Date().toISOString().slice(0, 10), weight: '' }] }))}
+              onPress={() =>
+                setState((p) => ({
+                  ...p,
+                  weighIns: [
+                    ...(p.weighIns ?? []),
+                    { date: new Date().toISOString().slice(0, 10), weight: '' },
+                  ],
+                }))
+              }
             >
               <Text style={styles.secondaryButtonText}>Add Weigh-In</Text>
             </Pressable>
@@ -346,6 +518,7 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Coach Assistant</Text>
             <Text style={styles.subtle}>Paste this into ChatGPT so I can tweak your plan from real logs.</Text>
+
             <TextInput
               style={[styles.input, styles.notes]}
               placeholder="Overall weekly notes"
@@ -354,7 +527,14 @@ export default function App() {
               value={state.coachNotes}
               onChangeText={(coachNotes) => setState((p) => ({ ...p, coachNotes }))}
             />
-            <TextInput style={[styles.input, styles.promptBox]} multiline editable={false} value={coachPrompt} />
+
+            <TextInput
+              style={[styles.input, styles.promptBox]}
+              multiline
+              editable={false}
+              value={coachPrompt}
+            />
+
             <Pressable style={styles.primaryButton} onPress={() => Alert.alert('Prompt ready', coachPrompt)}>
               <Text style={styles.primaryButtonText}>Show Coaching Prompt</Text>
             </Pressable>
@@ -364,7 +544,8 @@ export default function App() {
         {tab === 'settings' && (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Phase Settings</Text>
-            <Text style={styles.subtle}>This fixes the locked phase issue. Pick your current training phase.</Text>
+            <Text style={styles.subtle}>Pick your current training phase.</Text>
+
             {PHASES.map((phase) => (
               <Pressable
                 key={phase.key}
@@ -396,15 +577,15 @@ const styles = StyleSheet.create({
   fieldHalf: { flex: 1 },
   label: { color: '#d4d4d8', fontSize: 12, marginBottom: 6, fontWeight: '600' },
   input: { backgroundColor: '#27272a', color: 'white', borderColor: '#52525b', borderWidth: 1, borderRadius: 16, padding: 12 },
-  primaryButton: { flex: 1, backgroundColor: 'white', borderRadius: 18, padding: 13, alignItems: 'center' },
+  primaryButton: { flex: 1, backgroundColor: 'white', borderRadius: 18, padding: 13, alignItems: 'center', marginTop: 12 },
   primaryButtonText: { color: '#09090b', fontWeight: '800' },
   secondaryButton: { backgroundColor: '#27272a', borderColor: '#52525b', borderWidth: 1, borderRadius: 18, padding: 13, alignItems: 'center' },
   secondaryButtonFull: { backgroundColor: '#27272a', borderColor: '#52525b', borderWidth: 1, borderRadius: 18, padding: 13, alignItems: 'center', marginTop: 8 },
   secondaryButtonText: { color: 'white', fontWeight: '700' },
-  nav: { flexDirection: 'row', gap: 8, marginTop: 12 },
-  navItem: { flex: 1, backgroundColor: '#27272a', borderRadius: 16, padding: 12, alignItems: 'center' },
+  nav: { flexDirection: 'row', gap: 6, marginTop: 12 },
+  navItem: { flex: 1, backgroundColor: '#27272a', borderRadius: 14, padding: 10, alignItems: 'center' },
   navItemActive: { backgroundColor: 'white' },
-  navText: { color: 'white', fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
+  navText: { color: 'white', fontSize: 10, fontWeight: '700', textTransform: 'capitalize' },
   navTextActive: { color: '#09090b' },
   section: { gap: 12 },
   dayPills: { gap: 8, paddingVertical: 4 },
@@ -416,15 +597,15 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' },
   cardTitle: { color: 'white', fontSize: 22, fontWeight: '800' },
   badge: { color: 'white', backgroundColor: '#27272a', borderRadius: 12, overflow: 'hidden', paddingHorizontal: 10, paddingVertical: 6, fontWeight: '700' },
-  exerciseCard: { backgroundColor: '#27272a', borderRadius: 18, borderWidth: 1, borderColor: '#52525b', marginTop: 12, overflow: 'hidden' },
+  exerciseCard: { backgroundColor: '#27272a', borderRadius: 18, borderWidth: 1, borderColor: '#52525b', marginTop: 12, overflow: 'hidden', padding: 12 },
   exerciseTitle: { color: 'white', fontSize: 15, fontWeight: '800' },
-  openArea: { padding: 14, borderTopWidth: 1, borderTopColor: '#52525b', gap: 10 },
+  openArea: { paddingTop: 14, borderTopWidth: 1, borderTopColor: '#52525b', gap: 10, marginTop: 12 },
   progressionBox: { backgroundColor: '#18181b', borderRadius: 16, padding: 12, borderWidth: 1, borderColor: '#52525b' },
   bodyText: { color: '#f4f4f5', fontSize: 13, lineHeight: 19 },
   setRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   setLabel: { color: '#e4e4e7', width: 48, fontSize: 12 },
   setInput: { flex: 1, backgroundColor: '#18181b', color: 'white', borderColor: '#52525b', borderWidth: 1, borderRadius: 14, padding: 10 },
-  notes: { minHeight: 90, textAlignVertical: 'top' },
+  notes: { minHeight: 90, textAlignVertical: 'top', marginTop: 12 },
   completeExercise: { backgroundColor: 'white', borderRadius: 16, padding: 12, alignItems: 'center' },
   completeExerciseDone: { backgroundColor: '#34d399' },
   weighInCard: { backgroundColor: '#27272a', borderRadius: 20, padding: 14, borderWidth: 1, borderColor: '#52525b', marginTop: 12 },

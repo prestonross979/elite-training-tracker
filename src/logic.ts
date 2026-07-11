@@ -3,46 +3,87 @@ import { Exercise, ExerciseType } from './program';
 export function parseRepRange(repRange: string): { min: number; max: number } | null {
   const match = String(repRange).match(/(\d+)\s*-\s*(\d+)/);
   if (!match) return null;
-  return { min: Number(match[1]), max: Number(match[2]) };
+
+  return {
+    min: Number(match[1]),
+    max: Number(match[2]),
+  };
 }
 
 export function getIncrement(type: ExerciseType): string {
   switch (type) {
     case 'upper-compound':
-      return '+5 lb next session';
+      return '+5 lb';
     case 'lower-compound':
-      return '+10 lb next session';
+      return '+10 lb';
     case 'lower-machine':
-      return '+10–20 lb next session';
+      return '+10–20 lb';
     case 'machine':
-      return '+5–10 lb next session';
+      return '+5–10 lb';
     case 'isolation':
-      return '+2.5–5 lb next session';
+      return '+2.5–5 lb';
     case 'bodyweight':
-      return 'add reps first, then load';
+      return 'add reps first, then add load';
     default:
-      return 'keep it easy';
+      return 'a small amount';
   }
 }
 
-export type SetLog = { weight: string; reps: string };
-export type ExerciseLog = { name: string; completed: boolean; notes: string; sets: SetLog[] };
+export type SetLog = {
+  weight: string;
+  reps: string;
+};
+
+export type ExerciseLog = {
+  name: string;
+  completed: boolean;
+  notes: string;
+  sets: SetLog[];
+};
 
 export function getRecommendation(exercise: Exercise, log: ExerciseLog): string {
-  if (exercise.type === 'recovery') return 'Keep this easy and consistent.';
+  if (exercise.type === 'recovery') {
+    return 'Keep this easy and consistent.';
+  }
+
   const range = parseRepRange(exercise.repRange);
-  if (!range) return 'Log performance and stay controlled.';
 
-  const reps = log.sets.map((s) => Number(s.reps)).filter((n) => !Number.isNaN(n) && n > 0);
-  if (!reps.length) return `Start with a controlled weight for ${exercise.repRange}.`;
+  if (!range) {
+    return 'Log performance and stay controlled.';
+  }
 
-  const fullLogged = reps.length >= exercise.sets;
-  const allTop = fullLogged && reps.every((r) => r >= range.max);
-  const anyLow = reps.some((r) => r < range.min);
+  const reps = log.sets
+    .map((set) => Number(set.reps))
+    .filter((rep) => !Number.isNaN(rep) && rep > 0);
 
-  if (allTop) return `Increase: ${getIncrement(exercise.type)}.`;
-  if (anyLow) return 'Keep weight the same and clean up reps.';
-  return 'Hold weight and add 1 rep where you can.';
+  if (reps.length === 0) {
+    return `Start with a controlled weight for ${exercise.repRange}.`;
+  }
+
+  const latestRep = reps[reps.length - 1];
+  const latestSetNumber = reps.length;
+  const isFinalSet = latestSetNumber >= exercise.sets;
+  const increment = getIncrement(exercise.type);
+
+  if (latestRep < range.min) {
+    return isFinalSet
+      ? `Final set fell below range. Drop the weight next session or rest longer before this movement.`
+      : `Below target. Rest longer or drop weight for the next set.`;
+  }
+
+  if (latestRep >= range.max + 5) {
+    return isFinalSet
+      ? `Final set was way above range. Increase more aggressively next session. Normal jump: ${increment}.`
+      : `Way above target. Increase weight for the next set. Normal jump: ${increment}.`;
+  }
+
+  if (latestRep >= range.max) {
+    return isFinalSet
+      ? `Final set hit the top of the range. Increase weight next session by ${increment}.`
+      : `Good job. You hit your target. Increase weight for the next set by ${increment}.`;
+  }
+
+  return `Good set. Stay at this weight and try to reach ${range.max} reps.`;
 }
 
 export function todayName(): string {
