@@ -6,6 +6,28 @@ Unlike traditional workout trackers that only record sets and reps, Elite Gym Tr
 
 ---
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="screenshots/home.png" width="220" alt="Home screen with today's workout" /><br /><sub><b>Home</b></sub></td>
+    <td align="center"><img src="screenshots/workout-session.png" width="220" alt="Active workout session with live progression feedback" /><br /><sub><b>Live Progression</b></sub></td>
+    <td align="center"><img src="screenshots/exercise-swap.png" width="220" alt="Swapping to an alternative exercise" /><br /><sub><b>Exercise Swap</b></sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/programs.png" width="220" alt="Programs tab with built-in training plans" /><br /><sub><b>Programs</b></sub></td>
+    <td align="center"><img src="screenshots/history.png" width="220" alt="Workout history" /><br /><sub><b>History</b></sub></td>
+    <td align="center"><img src="screenshots/weight.png" width="220" alt="Bodyweight log" /><br /><sub><b>Weight Log</b></sub></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="screenshots/settings.png" width="220" alt="Training phase settings" /><br />
+  <sub><b>Phase Settings</b></sub>
+</p>
+
+---
+
 ## Overview
 
 Most workout applications function like digital notebooks.
@@ -93,6 +115,15 @@ Example:
 ```text
 Good job. You reached the top of your target range.
 Increase the weight by 5 lbs for the next set.
+```
+
+---
+
+## Installation
+
+1. Clone the repository.
+2. `cd` into the project folder.
+3. Install [Expo Go](https://expo.dev/go) on your iPhone or Android device.
 4. Run:
 
 ```bash
