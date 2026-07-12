@@ -8,15 +8,16 @@ type Props = {
   day: WorkoutDay;
   isSelected?: boolean;
   isRecommended?: boolean;
+  hasSessionInProgress?: boolean;
   onPress: () => void;
 };
 
-export default function WorkoutDayCard({ day, isSelected, isRecommended, onPress }: Props) {
+export default function WorkoutDayCard({ day, isSelected, isRecommended, hasSessionInProgress, onPress }: Props) {
   return (
     <Pressable style={[styles.card, isSelected && styles.cardSelected]} onPress={onPress}>
       <View style={styles.headerRow}>
         <Text style={styles.title}>{day.name}</Text>
-        {isRecommended ? <Badge label="Next Up" tone="accent" /> : null}
+        {hasSessionInProgress ? <Badge label="In Progress" tone="accent" /> : isRecommended ? <Badge label="Next Up" tone="accent" /> : null}
       </View>
 
       <Text style={styles.meta}>

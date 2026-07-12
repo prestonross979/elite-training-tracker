@@ -11,9 +11,11 @@ type Props = {
   activeProgram: ActiveProgramState | null;
   onSelectPlan: (planId: string) => void;
   onOpenActiveProgram: () => void;
+  hasActiveSession?: boolean;
+  onResumeWorkout?: () => void;
 };
 
-export default function ProgramsScreen({ activeProgram, onSelectPlan, onOpenActiveProgram }: Props) {
+export default function ProgramsScreen({ activeProgram, onSelectPlan, onOpenActiveProgram, hasActiveSession, onResumeWorkout }: Props) {
   const featured = getFeaturedTrainingPlan();
   const otherPlans = builtInTrainingPlans.filter((plan) => plan.id !== featured?.id);
 
@@ -23,8 +25,9 @@ export default function ProgramsScreen({ activeProgram, onSelectPlan, onOpenActi
         <Card>
           <Text style={styles.title}>Active Program</Text>
           <Text style={styles.subtle}>{activeProgram.activePlan.name}</Text>
-          <View style={{ marginTop: 12 }}>
-            <Button label="Open Active Program" onPress={onOpenActiveProgram} />
+          <View style={{ marginTop: 12, gap: 8 }}>
+            {hasActiveSession && onResumeWorkout ? <Button label="Resume Workout" onPress={onResumeWorkout} /> : null}
+            <Button label="Open Active Program" variant={hasActiveSession ? 'secondary' : 'primary'} onPress={onOpenActiveProgram} />
           </View>
         </Card>
       ) : (

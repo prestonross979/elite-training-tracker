@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { ActiveProgramState, TrainingPlan } from '../types/training';
+import type { ActiveProgramState, TrainingPlan, WorkoutDay } from '../types/training';
 import { cloneTrainingPlan, getTrainingPlanById } from '../data/plans';
 
 const STORAGE_KEY = 'elite-gym-tracker-programs-v1';
@@ -156,13 +156,25 @@ export async function setCurrentDayIndex(index: number): Promise<ActiveProgramSt
   return active;
 }
 
+// Walks forward from a just-completed day to the next non-rest day, so the
+// recommendation never lands on a rest day even though the user can still
+// manually open one. Falls back to the immediate next day if every other
+// day in the cycle is rest.
+function findNextTrainableIndex(days: WorkoutDay[], fromIndex: number): number {
+  for (let offset = 1; offset <= days.length; offset += 1) {
+    const index = (fromIndex + offset) % days.length;
+    if (days[index].type !== 'rest') return index;
+  }
+  return (fromIndex + 1) % days.length;
+}
+
 export async function recordWorkoutDayCompletion(workoutDayId: string, completedAt: string): Promise<ActiveProgramState | null> {
   const storage = await readStorage();
   if (!storage.active) return null;
 
   const days = storage.active.activePlan.workoutDays;
   const completedIndex = days.findIndex((day) => day.id === workoutDayId);
-  const nextIndex = completedIndex >= 0 ? (completedIndex + 1) % days.length : storage.active.currentDayIndex;
+  const nextIndex = completedIndex >= 0 ? findNextTrainableIndex(days, completedIndex) : storage.active.currentDayIndex;
 
   const active: ActiveProgramState = {
     ...storage.active,

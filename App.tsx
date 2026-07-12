@@ -16,8 +16,21 @@ import {
 } from './src/storage/programStorage';
 import ProgramsScreen from './src/screens/ProgramsScreen';
 import ActiveProgramScreen from './src/screens/ActiveProgramScreen';
+import SessionWorkoutScreen from './src/screens/SessionWorkoutScreen';
 import { getExerciseById } from './src/data/exercises';
 import BottomTabs, { RootTab } from './src/components/BottomTabs';
+import ExerciseLogCard from './src/components/workouts/ExerciseLogCard';
+import WorkoutSummaryCard from './src/components/workouts/WorkoutSummaryCard';
+import {
+  loadSession,
+  saveSession,
+  clearSession,
+  createProgramWorkoutSession,
+  isEmptyWorkoutDay,
+} from './src/storage/workoutSession';
+import type { WorkoutSession, SessionCardioEntry } from './src/storage/workoutSession';
+import { buildSessionSummary, summarizeCardioForHistoryNotes } from './src/logic/sessionSummary';
+import type { SessionSummary } from './src/logic/sessionSummary';
 
 type AppState = {
   phase: typeof PHASES[number]['key'];
@@ -111,12 +124,13 @@ function normalizeState(saved: Partial<AppState> | null): AppState {
 export default function App() {
   const [state, setState] = useState<AppState>(createDefaultState());
   const [tab, setTab] = useState<RootTab>('workout');
-  const [openExercise, setOpenExercise] = useState<number | null>(null);
 
   const [activeProgram, setActiveProgram] = useState<ActiveProgramState | null>(null);
   const [programsView, setProgramsView] = useState<'browse' | 'active'>('browse');
   const [selectedProgramDayId, setSelectedProgramDayId] = useState<string | null>(null);
   const [selectedCardioOptionId, setSelectedCardioOptionId] = useState<string | undefined>(undefined);
+  const [session, setSession] = useState<WorkoutSession | null>(null);
+  const [sessionSummary, setSessionSummary] = useState<SessionSummary | null>(null);
 
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
@@ -137,11 +151,25 @@ export default function App() {
         }
       })
       .catch(() => {});
+
+    loadSession()
+      .then((loaded) => {
+        if (loaded && loaded.status === 'in-progress') {
+          setSession(loaded);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
   }, [state]);
+
+  useEffect(() => {
+    if (session && session.status === 'in-progress') {
+      saveSession(session).catch(() => {});
+    }
+  }, [session]);
 
   useEffect(() => {
     if (!selectedProgramDayId) return;
@@ -154,35 +182,6 @@ export default function App() {
     if (!activeProgram || !selectedProgramDayId) return undefined;
     return activeProgram.activePlan.workoutDays.find((day) => day.id === selectedProgramDayId);
   }, [activeProgram, selectedProgramDayId]);
-
-  useEffect(() => {
-    if (!selectedProgramDay) return;
-
-    setState((prev) => {
-      const existing = prev.programLogs[selectedProgramDay.id] ?? {};
-      let changed = false;
-      const nextDayLogs = { ...existing };
-
-      selectedProgramDay.exercises.forEach((planned) => {
-        if (!nextDayLogs[planned.exerciseId]) {
-          changed = true;
-          nextDayLogs[planned.exerciseId] = {
-            name: getExerciseById(planned.exerciseId)?.name ?? planned.exerciseId,
-            completed: false,
-            notes: '',
-            sets: Array.from({ length: planned.sets }).map(() => ({ weight: '', reps: '' })),
-          };
-        }
-      });
-
-      if (!changed) return prev;
-
-      return {
-        ...prev,
-        programLogs: { ...prev.programLogs, [selectedProgramDay.id]: nextDayLogs },
-      };
-    });
-  }, [selectedProgramDay]);
 
   const handleSelectPlan = (planId: string) => {
     selectBuiltInPlan(planId).then((result) => {
@@ -207,63 +206,165 @@ export default function App() {
     });
   };
 
-  const handleUpdateProgramSet = (exerciseId: string, setIndex: number, field: 'weight' | 'reps', value: string) => {
-    if (!selectedProgramDayId) return;
-    setState((prev) => {
-      const next = clone(prev);
-      const dayLogs = next.programLogs[selectedProgramDayId] ?? {};
-      const log = dayLogs[exerciseId];
-      if (!log) return prev;
-      log.sets[setIndex][field] = value;
-      next.programLogs[selectedProgramDayId] = dayLogs;
-      return next;
-    });
-  };
-
-  const handleUpdateProgramExerciseField = (exerciseId: string, field: 'completed' | 'notes', value: boolean | string) => {
-    if (!selectedProgramDayId) return;
-    setState((prev) => {
-      const next = clone(prev);
-      const dayLogs = next.programLogs[selectedProgramDayId] ?? {};
-      const log = dayLogs[exerciseId];
-      if (!log) return prev;
-      if (field === 'completed') {
-        log.completed = value as boolean;
-      } else {
-        log.notes = value as string;
-      }
-      next.programLogs[selectedProgramDayId] = dayLogs;
-      return next;
-    });
-  };
-
   const handleSelectCardioOption = (optionId: string) => {
     if (!selectedProgramDayId) return;
     setSelectedCardioOptionId(optionId);
     setSelectedCardioOption(selectedProgramDayId, optionId).catch(() => {});
   };
 
-  const handleCompleteProgramDay = () => {
+  // --- Workout session (connects the active program's selected day to the existing logger) ---
+
+  const beginProgramSession = (day: WorkoutDay) => {
+    if (!activeProgram) return;
+    const newSession = createProgramWorkoutSession(activeProgram.selectedPlanId, day, selectedCardioOptionId);
+    setSession(newSession);
+    setSessionSummary(null);
+    setTab('workout');
+  };
+
+  const handleStartWorkout = () => {
     if (!activeProgram || !selectedProgramDay) return;
+
+    if (isEmptyWorkoutDay(selectedProgramDay)) {
+      Alert.alert('Rest Day', 'There is nothing planned to log for this day.');
+      return;
+    }
+
+    const requiredCardioGroup = selectedProgramDay.cardioGroups.find((group) => group.minimumSelections > 0);
+    if (requiredCardioGroup && !selectedCardioOptionId) {
+      Alert.alert('Choose a Cardio Option', 'Pick a cardio option for this day before starting the workout.');
+      return;
+    }
+
+    if (session && session.status === 'in-progress' && session.workoutDayId !== selectedProgramDay.id) {
+      Alert.alert(
+        'Workout In Progress',
+        `You have an in-progress workout (${session.workoutName}). Resume it or discard it and start this one?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Resume Existing', onPress: () => setTab('workout') },
+          {
+            text: 'Discard & Start New',
+            style: 'destructive',
+            onPress: () => {
+              clearSession().catch(() => {});
+              beginProgramSession(selectedProgramDay);
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    if (session && session.status === 'in-progress' && session.workoutDayId === selectedProgramDay.id) {
+      setTab('workout');
+      return;
+    }
+
+    beginProgramSession(selectedProgramDay);
+  };
+
+  const handleResumeWorkout = () => setTab('workout');
+
+  const handleCancelSession = () => {
+    if (!session) return;
+    Alert.alert('Discard this workout?', 'All logged sets and cardio entries for this session will be lost.', [
+      { text: 'Keep Logging', style: 'cancel' },
+      {
+        text: 'Discard',
+        style: 'destructive',
+        onPress: () => {
+          clearSession().catch(() => {});
+          setSession(null);
+        },
+      },
+    ]);
+  };
+
+  const handleSessionSetChange = (exerciseId: string, setIndex: number, field: 'weight' | 'reps', value: string) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = clone(prev);
+      const exercise = next.exercises.find((entry) => entry.exerciseId === exerciseId);
+      if (!exercise) return prev;
+      exercise.sets[setIndex][field] = value;
+      return next;
+    });
+  };
+
+  const handleSessionExerciseFieldChange = (exerciseId: string, field: 'completed' | 'notes', value: boolean | string) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = clone(prev);
+      const exercise = next.exercises.find((entry) => entry.exerciseId === exerciseId);
+      if (!exercise) return prev;
+      if (field === 'completed') {
+        exercise.completed = value as boolean;
+      } else {
+        exercise.notes = value as string;
+      }
+      return next;
+    });
+  };
+
+  const handleSessionCardioFieldChange = (
+    plannedOptionId: string,
+    field: keyof Pick<
+      SessionCardioEntry,
+      'durationMinutes' | 'distanceMiles' | 'rounds' | 'roundDurationSeconds' | 'restSeconds' | 'calories' | 'steps' | 'notes'
+    >,
+    value: string,
+  ) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = clone(prev);
+      const entry = next.cardio.find((item) => item.plannedOptionId === plannedOptionId);
+      if (!entry) return prev;
+      entry[field] = value;
+      return next;
+    });
+  };
+
+  const handleToggleSessionCardioComplete = (plannedOptionId: string) => {
+    setSession((prev) => {
+      if (!prev) return prev;
+      const next = clone(prev);
+      const entry = next.cardio.find((item) => item.plannedOptionId === plannedOptionId);
+      if (!entry) return prev;
+      entry.completed = !entry.completed;
+      return next;
+    });
+  };
+
+  const handleCompleteSession = () => {
+    if (!session) return;
     const completedAt = new Date().toISOString();
-    const dayLogs = state.programLogs[selectedProgramDay.id] ?? {};
+
+    const exerciseLogs: ExerciseLog[] = session.exercises.map((sessionExercise) => ({
+      name: getExerciseById(sessionExercise.exerciseId)?.name ?? sessionExercise.exerciseId,
+      completed: sessionExercise.completed,
+      notes: sessionExercise.notes,
+      sets: sessionExercise.sets,
+    }));
+
+    const cardioNotes = summarizeCardioForHistoryNotes(session);
 
     setState((prev) => {
       const next = clone(prev);
-      const nextDayLogs = next.programLogs[selectedProgramDay.id] ?? {};
 
-      Object.keys(nextDayLogs).forEach((exerciseId) => {
-        nextDayLogs[exerciseId].completed = true;
+      const dayLogs: Record<string, ExerciseLog> = {};
+      session.exercises.forEach((sessionExercise, index) => {
+        dayLogs[sessionExercise.exerciseId] = exerciseLogs[index];
       });
+      next.programLogs[session.workoutDayId] = dayLogs;
 
-      next.programLogs[selectedProgramDay.id] = nextDayLogs;
       next.history = [
         {
           date: completedAt.slice(0, 10),
-          day: selectedProgramDay.id,
-          title: selectedProgramDay.name,
-          logs: Object.values(nextDayLogs),
-          notes: activeProgram.activePlan.name,
+          day: session.workoutDayId,
+          title: session.workoutName,
+          logs: exerciseLogs,
+          notes: cardioNotes,
         },
         ...(next.history ?? []),
       ];
@@ -271,11 +372,16 @@ export default function App() {
       return next;
     });
 
-    recordWorkoutDayCompletion(selectedProgramDay.id, completedAt).then((result) => {
-      if (result) setActiveProgram(result);
-    });
+    setSessionSummary(buildSessionSummary(session));
+    setSession(null);
+    clearSession().catch(() => {});
 
-    Alert.alert('Workout Saved', 'Your program workout has been added to your history.');
+    recordWorkoutDayCompletion(session.workoutDayId, completedAt).then((result) => {
+      if (!result) return;
+      setActiveProgram(result);
+      const nextDay = result.activePlan.workoutDays[result.currentDayIndex];
+      setSessionSummary(buildSessionSummary(session, nextDay?.name));
+    });
   };
 
   const selectedDay = useMemo(
@@ -457,113 +563,75 @@ export default function App() {
 
         {tab === 'workout' && (
           <View style={styles.section}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dayPills}>
-              {PROGRAM.map((day) => (
-                <Pressable
-                  key={day.day}
-                  style={[styles.dayPill, state.selectedDay === day.day && styles.dayPillActive]}
-                  onPress={() => {
-                    setState((p) => ({ ...p, selectedDay: day.day }));
-                    setOpenExercise(null);
-                  }}
-                >
-                  <Text style={[styles.dayPillText, state.selectedDay === day.day && styles.dayPillTextActive]}>
-                    {day.day.slice(0, 3)}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            <View style={styles.card}>
-              <View style={styles.cardHeader}>
-                <View>
-                  <Text style={styles.cardTitle}>{selectedDay.day}</Text>
-                  <Text style={styles.subtle}>{selectedDay.title}</Text>
-                </View>
-
-                <Text style={styles.badge}>
-                  {selectedLogs.filter((x) => x.completed).length}/{selectedLogs.length}
-                </Text>
-              </View>
-
-              {selectedDay.exercises.map((exercise, exerciseIndex) => {
-                const log = selectedLogs[exerciseIndex];
-                const isOpen = openExercise === exerciseIndex;
-
-                if (!log) return null;
-
-                return (
-                  <View key={exercise.name} style={styles.exerciseCard}>
-                    <Pressable onPress={() => setOpenExercise(isOpen ? null : exerciseIndex)}>
-                      <View style={styles.cardHeader}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.exerciseTitle}>
-                            {log.completed ? '✅ ' : ''}
-                            {exercise.name}
-                          </Text>
-                          <Text style={styles.subtle}>
-                            {exercise.sets} sets • {exercise.repRange}
-                          </Text>
-                        </View>
-
-                        <Text style={styles.subtle}>{isOpen ? 'Hide' : 'Open'}</Text>
-                      </View>
+            {session ? (
+              <SessionWorkoutScreen
+                session={session}
+                planName={activeProgram?.activePlan.name ?? ''}
+                onUpdateExerciseSet={handleSessionSetChange}
+                onUpdateExerciseField={handleSessionExerciseFieldChange}
+                onUpdateCardioField={handleSessionCardioFieldChange}
+                onToggleCardioComplete={handleToggleSessionCardioComplete}
+                onComplete={handleCompleteSession}
+                onCancel={handleCancelSession}
+              />
+            ) : sessionSummary ? (
+              <WorkoutSummaryCard
+                summary={sessionSummary}
+                onDone={() => {
+                  setSessionSummary(null);
+                  setTab('programs');
+                  setProgramsView('active');
+                }}
+              />
+            ) : (
+              <>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dayPills}>
+                  {PROGRAM.map((day) => (
+                    <Pressable
+                      key={day.day}
+                      style={[styles.dayPill, state.selectedDay === day.day && styles.dayPillActive]}
+                      onPress={() => {
+                        setState((p) => ({ ...p, selectedDay: day.day }));
+                      }}
+                    >
+                      <Text style={[styles.dayPillText, state.selectedDay === day.day && styles.dayPillTextActive]}>
+                        {day.day.slice(0, 3)}
+                      </Text>
                     </Pressable>
+                  ))}
+                </ScrollView>
 
-                    {isOpen && (
-                      <View style={styles.openArea}>
-                        <View style={styles.progressionBox}>
-                          <Text style={styles.label}>Progression</Text>
-                          <Text style={styles.bodyText}>{getRecommendation(exercise, log)}</Text>
-                        </View>
+                <View style={styles.card}>
+                  <View style={styles.cardHeader}>
+                    <View>
+                      <Text style={styles.cardTitle}>{selectedDay.day}</Text>
+                      <Text style={styles.subtle}>{selectedDay.title}</Text>
+                    </View>
 
-                        {(log.sets ?? []).map((set, setIndex) => (
-                          <View key={setIndex} style={styles.setRow}>
-                            <Text style={styles.setLabel}>Set {setIndex + 1}</Text>
-
-                            <TextInput
-                              style={styles.setInput}
-                              placeholder="Weight"
-                              placeholderTextColor="#a1a1aa"
-                              keyboardType="decimal-pad"
-                              value={set.weight}
-                              onChangeText={(value) => updateSet(exerciseIndex, setIndex, 'weight', value)}
-                            />
-
-                            <TextInput
-                              style={styles.setInput}
-                              placeholder="Reps"
-                              placeholderTextColor="#a1a1aa"
-                              keyboardType="number-pad"
-                              value={set.reps}
-                              onChangeText={(value) => updateSet(exerciseIndex, setIndex, 'reps', value)}
-                            />
-                          </View>
-                        ))}
-
-                        <TextInput
-                          style={[styles.input, styles.notes]}
-                          placeholder="Notes: energy, sleep, pump, pain"
-                          placeholderTextColor="#a1a1aa"
-                          multiline
-                          value={log.notes}
-                          onChangeText={(value) => updateExercise(exerciseIndex, 'notes', value)}
-                        />
-
-                        <Pressable
-                          style={[styles.completeExercise, log.completed && styles.completeExerciseDone]}
-                          onPress={() => updateExercise(exerciseIndex, 'completed', !log.completed)}
-                        >
-                          <Text style={styles.primaryButtonText}>
-                            {log.completed ? 'Completed' : 'Mark Complete'}
-                          </Text>
-                        </Pressable>
-                      </View>
-                    )}
+                    <Text style={styles.badge}>
+                      {selectedLogs.filter((x) => x.completed).length}/{selectedLogs.length}
+                    </Text>
                   </View>
-                );
-              })}
-            </View>
+
+                  {selectedDay.exercises.map((exercise, exerciseIndex) => {
+                    const log = selectedLogs[exerciseIndex];
+                    if (!log) return null;
+
+                    return (
+                      <ExerciseLogCard
+                        key={exercise.name}
+                        title={exercise.name}
+                        meta={`${exercise.sets} sets • ${exercise.repRange}`}
+                        log={log}
+                        recommendation={getRecommendation(exercise, log)}
+                        onUpdateSet={(setIndex, field, value) => updateSet(exerciseIndex, setIndex, field, value)}
+                        onUpdateField={(field, value) => updateExercise(exerciseIndex, field, value)}
+                      />
+                    );
+                  })}
+                </View>
+              </>
+            )}
           </View>
         )}
 
@@ -574,21 +642,22 @@ export default function App() {
                 activeProgram={activeProgram}
                 selectedDayId={selectedProgramDay.id}
                 onSelectDayId={setSelectedProgramDayId}
-                dayLogs={state.programLogs[selectedProgramDay.id] ?? {}}
-                onUpdateSet={handleUpdateProgramSet}
-                onUpdateExerciseField={handleUpdateProgramExerciseField}
-                onCompleteDay={handleCompleteProgramDay}
                 selectedCardioOptionId={selectedCardioOptionId}
                 onSelectCardioOption={handleSelectCardioOption}
                 onPlanChange={handleProgramPlanChange}
                 onResetPlan={handleResetProgramPlan}
                 onBrowsePlans={() => setProgramsView('browse')}
+                activeSessionDayId={session?.status === 'in-progress' ? session.workoutDayId : null}
+                onStartWorkout={handleStartWorkout}
+                onResumeWorkout={handleResumeWorkout}
               />
             ) : (
               <ProgramsScreen
                 activeProgram={activeProgram}
                 onSelectPlan={handleSelectPlan}
                 onOpenActiveProgram={() => setProgramsView('active')}
+                hasActiveSession={session?.status === 'in-progress'}
+                onResumeWorkout={handleResumeWorkout}
               />
             )}
           </View>
@@ -772,17 +841,9 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, alignItems: 'flex-start' },
   cardTitle: { color: 'white', fontSize: 22, fontWeight: '800' },
   badge: { color: 'white', backgroundColor: '#27272a', borderRadius: 12, overflow: 'hidden', paddingHorizontal: 10, paddingVertical: 6, fontWeight: '700' },
-  exerciseCard: { backgroundColor: '#27272a', borderRadius: 18, borderWidth: 1, borderColor: '#52525b', marginTop: 12, overflow: 'hidden', padding: 12 },
   exerciseTitle: { color: 'white', fontSize: 15, fontWeight: '800' },
-  openArea: { paddingTop: 14, borderTopWidth: 1, borderTopColor: '#52525b', gap: 10, marginTop: 12 },
-  progressionBox: { backgroundColor: '#18181b', borderRadius: 16, padding: 12, borderWidth: 1, borderColor: '#52525b' },
   bodyText: { color: '#f4f4f5', fontSize: 13, lineHeight: 19 },
-  setRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  setLabel: { color: '#e4e4e7', width: 48, fontSize: 12 },
-  setInput: { flex: 1, backgroundColor: '#18181b', color: 'white', borderColor: '#52525b', borderWidth: 1, borderRadius: 14, padding: 10 },
   notes: { minHeight: 90, textAlignVertical: 'top', marginTop: 12 },
-  completeExercise: { backgroundColor: 'white', borderRadius: 16, padding: 12, alignItems: 'center' },
-  completeExerciseDone: { backgroundColor: '#34d399' },
   weighInCard: { backgroundColor: '#27272a', borderRadius: 20, padding: 14, borderWidth: 1, borderColor: '#52525b', marginTop: 12 },
   divider: { height: 1, backgroundColor: '#52525b', marginVertical: 14 },
   promptBox: { minHeight: 260, textAlignVertical: 'top', marginTop: 12 },

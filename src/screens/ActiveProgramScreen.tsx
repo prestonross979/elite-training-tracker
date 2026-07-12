@@ -1,9 +1,7 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ActiveProgramState, TrainingPlan, WorkoutDay } from '../types/training';
 import { getExerciseById, getExerciseAlternatives } from '../data/exercises';
-import { getPlannedExerciseRecommendation } from '../logic/planProgression';
-import type { ExerciseLog } from '../logic';
 import { colors } from '../theme/colors';
 import Card from '../components/common/Card';
 import Badge from '../components/common/Badge';
@@ -15,43 +13,36 @@ type Props = {
   activeProgram: ActiveProgramState;
   selectedDayId: string;
   onSelectDayId: (id: string) => void;
-  dayLogs: Record<string, ExerciseLog>;
-  onUpdateSet: (exerciseId: string, setIndex: number, field: 'weight' | 'reps', value: string) => void;
-  onUpdateExerciseField: (exerciseId: string, field: 'completed' | 'notes', value: boolean | string) => void;
-  onCompleteDay: () => void;
   selectedCardioOptionId?: string;
   onSelectCardioOption: (optionId: string) => void;
   onPlanChange: (updatedPlan: TrainingPlan) => void;
   onResetPlan: () => void;
   onBrowsePlans: () => void;
+  activeSessionDayId: string | null;
+  onStartWorkout: () => void;
+  onResumeWorkout: () => void;
 };
 
 export default function ActiveProgramScreen({
   activeProgram,
   selectedDayId,
   onSelectDayId,
-  dayLogs,
-  onUpdateSet,
-  onUpdateExerciseField,
-  onCompleteDay,
   selectedCardioOptionId,
   onSelectCardioOption,
   onPlanChange,
   onResetPlan,
   onBrowsePlans,
+  activeSessionDayId,
+  onStartWorkout,
+  onResumeWorkout,
 }: Props) {
-  const [openExerciseId, setOpenExerciseId] = useState<string | null>(null);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | null>(null);
 
   const plan = activeProgram.activePlan;
   const recommendedDay = plan.workoutDays[activeProgram.currentDayIndex];
   const selectedDay: WorkoutDay = plan.workoutDays.find((day) => day.id === selectedDayId) ?? recommendedDay ?? plan.workoutDays[0];
-
-  const completion = useMemo(() => {
-    const total = selectedDay.exercises.length;
-    const complete = selectedDay.exercises.filter((planned) => dayLogs[planned.exerciseId]?.completed).length;
-    return { total, complete };
-  }, [selectedDay, dayLogs]);
+  const hasNothingPlanned = selectedDay.exercises.length === 0 && selectedDay.cardioGroups.length === 0;
+  const isSessionHere = activeSessionDayId === selectedDay.id;
 
   function updateDay(mutator: (day: WorkoutDay) => WorkoutDay) {
     const updatedDays = plan.workoutDays.map((day) => (day.id === selectedDay.id ? mutator(day) : day));
@@ -119,6 +110,7 @@ export default function ActiveProgramScreen({
             day={day}
             isSelected={day.id === selectedDay.id}
             isRecommended={day.id === recommendedDay?.id}
+            hasSessionInProgress={activeSessionDayId === day.id}
             onPress={() => onSelectDayId(day.id)}
           />
         ))}
@@ -130,115 +122,78 @@ export default function ActiveProgramScreen({
             <Text style={styles.dayTitle}>{selectedDay.name}</Text>
             {selectedDay.description ? <Text style={styles.subtle}>{selectedDay.description}</Text> : null}
           </View>
-          {completion.total > 0 ? <Badge label={`${completion.complete}/${completion.total}`} /> : null}
+          {activeSessionDayId && activeSessionDayId !== selectedDay.id ? <Badge label="Other Session Active" /> : null}
         </View>
 
-        {selectedDay.exercises.map((planned) => {
-          const exercise = getExerciseById(planned.exerciseId);
-          if (!exercise) return null;
+        {hasNothingPlanned ? (
+          <Text style={styles.subtle}>Rest day — nothing planned. You can still mark it complete from the Workout tab.</Text>
+        ) : (
+          selectedDay.exercises.map((planned) => {
+            const exercise = getExerciseById(planned.exerciseId);
+            if (!exercise) return null;
 
-          const log = dayLogs[planned.exerciseId];
-          const isOpen = openExerciseId === planned.exerciseId;
-          const isSwapping = swappingExerciseId === planned.exerciseId;
+            const isSwapping = swappingExerciseId === planned.exerciseId;
 
-          return (
-            <View key={planned.id} style={styles.exerciseCard}>
-              <Pressable style={styles.exerciseHeaderRow} onPress={() => setOpenExerciseId(isOpen ? null : planned.exerciseId)}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.exerciseTitle}>
-                    {log?.completed ? '✅ ' : ''}
-                    {exercise.name}
-                  </Text>
-                  <Text style={styles.subtle}>
-                    {planned.sets} sets • {planned.repRange}
-                  </Text>
-                </View>
-              </Pressable>
-
-              <View style={styles.stepperRow}>
-                <Text style={styles.stepperLabel}>Sets</Text>
-                <Button label="-" variant="secondary" onPress={() => changeSets(planned.id, -1)} />
-                <Text style={styles.stepperValue}>{planned.sets}</Text>
-                <Button label="+" variant="secondary" onPress={() => changeSets(planned.id, 1)} />
-                <View style={{ flex: 1 }}>
-                  <TextInput
-                    style={styles.repRangeInput}
-                    value={planned.repRange}
-                    onChangeText={(value) => changeRepRange(planned.id, value)}
-                    placeholder="Rep range"
-                    placeholderTextColor={colors.textSubtle}
-                  />
-                </View>
-              </View>
-
-              <View style={styles.actionsRow}>
-                <View style={{ flex: 1 }}>
-                  <Button
-                    label={isSwapping ? 'Cancel Swap' : 'Swap'}
-                    variant="secondary"
-                    onPress={() => setSwappingExerciseId(isSwapping ? null : planned.exerciseId)}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Button label="Remove" variant="secondary" onPress={() => removeExercise(planned.id)} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Button label={isOpen ? 'Hide' : 'Log'} onPress={() => setOpenExerciseId(isOpen ? null : planned.exerciseId)} />
-                </View>
-              </View>
-
-              {isSwapping ? (
-                <View style={styles.altRow}>
-                  {getExerciseAlternatives(planned.exerciseId).length === 0 ? (
-                    <Text style={styles.subtle}>No alternatives listed for this exercise.</Text>
-                  ) : (
-                    getExerciseAlternatives(planned.exerciseId).map((alt) => (
-                      <Pressable key={alt.id} style={{ marginTop: 6 }} onPress={() => replaceExercise(planned.id, alt.id)}>
-                        <Badge label={alt.name} tone="accent" />
-                      </Pressable>
-                    ))
-                  )}
-                </View>
-              ) : null}
-
-              {isOpen && log ? (
-                <View style={styles.openArea}>
-                  <View style={styles.progressionBox}>
-                    <Text style={styles.stepperLabel}>Progression</Text>
-                    <Text style={styles.bodyText}>{getPlannedExerciseRecommendation(exercise, planned, log)}</Text>
-                  </View>
-
-                  {log.sets.map((set, setIndex) => (
-                    <View key={setIndex} style={styles.setRow}>
-                      <Text style={styles.setLabel}>Set {setIndex + 1}</Text>
-                      <TextInput
-                        style={styles.setInput}
-                        placeholder="Weight"
-                        placeholderTextColor={colors.textSubtle}
-                        keyboardType="decimal-pad"
-                        value={set.weight}
-                        onChangeText={(value) => onUpdateSet(planned.exerciseId, setIndex, 'weight', value)}
-                      />
-                      <TextInput
-                        style={styles.setInput}
-                        placeholder="Reps"
-                        placeholderTextColor={colors.textSubtle}
-                        keyboardType="number-pad"
-                        value={set.reps}
-                        onChangeText={(value) => onUpdateSet(planned.exerciseId, setIndex, 'reps', value)}
-                      />
+            return (
+              <View key={planned.id} style={styles.exerciseCard}>
+                <View style={styles.exerciseHeaderRow}>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.titleRow}>
+                      <Text style={styles.exerciseTitle}>{exercise.name}</Text>
+                      {planned.isOptional ? <Badge label="Optional" /> : null}
                     </View>
-                  ))}
-
-                  <Button
-                    label={log.completed ? 'Completed' : 'Mark Complete'}
-                    onPress={() => onUpdateExerciseField(planned.exerciseId, 'completed', !log.completed)}
-                  />
+                    <Text style={styles.subtle}>
+                      {planned.sets} sets • {planned.repRange}
+                    </Text>
+                  </View>
                 </View>
-              ) : null}
-            </View>
-          );
-        })}
+
+                <View style={styles.stepperRow}>
+                  <Text style={styles.stepperLabel}>Sets</Text>
+                  <Button label="-" variant="secondary" onPress={() => changeSets(planned.id, -1)} />
+                  <Text style={styles.stepperValue}>{planned.sets}</Text>
+                  <Button label="+" variant="secondary" onPress={() => changeSets(planned.id, 1)} />
+                  <View style={{ flex: 1 }}>
+                    <TextInput
+                      style={styles.repRangeInput}
+                      value={planned.repRange}
+                      onChangeText={(value) => changeRepRange(planned.id, value)}
+                      placeholder="Rep range"
+                      placeholderTextColor={colors.textSubtle}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.actionsRow}>
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      label={isSwapping ? 'Cancel Swap' : 'Swap'}
+                      variant="secondary"
+                      onPress={() => setSwappingExerciseId(isSwapping ? null : planned.exerciseId)}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Button label="Remove" variant="secondary" onPress={() => removeExercise(planned.id)} />
+                  </View>
+                </View>
+
+                {isSwapping ? (
+                  <View style={styles.altRow}>
+                    {getExerciseAlternatives(planned.exerciseId).length === 0 ? (
+                      <Text style={styles.subtle}>No alternatives listed for this exercise.</Text>
+                    ) : (
+                      getExerciseAlternatives(planned.exerciseId).map((alt) => (
+                        <Pressable key={alt.id} style={{ marginTop: 6 }} onPress={() => replaceExercise(planned.id, alt.id)}>
+                          <Badge label={alt.name} tone="accent" />
+                        </Pressable>
+                      ))
+                    )}
+                  </View>
+                ) : null}
+              </View>
+            );
+          })
+        )}
 
         {selectedDay.cardioGroups.map((group) => (
           <CardioOptionPicker
@@ -250,7 +205,11 @@ export default function ActiveProgramScreen({
         ))}
 
         <View style={{ marginTop: 14 }}>
-          <Button label="Complete Day" onPress={onCompleteDay} />
+          {isSessionHere ? (
+            <Button label="Resume Workout" onPress={onResumeWorkout} />
+          ) : (
+            <Button label="Start Workout" onPress={onStartWorkout} disabled={hasNothingPlanned} />
+          )}
         </View>
       </Card>
     </View>
@@ -274,6 +233,7 @@ const styles = StyleSheet.create({
     padding: 12,
   },
   exerciseHeaderRow: { flexDirection: 'row', alignItems: 'center' },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   exerciseTitle: { color: colors.text, fontSize: 15, fontWeight: '800' },
   stepperRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 },
   stepperLabel: { color: colors.textMuted, fontSize: 12, fontWeight: '600' },
@@ -287,10 +247,4 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   altRow: { marginTop: 10, gap: 6 },
-  openArea: { paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.borderMuted, gap: 10, marginTop: 12 },
-  progressionBox: { backgroundColor: colors.surface, borderRadius: 14, padding: 10, borderWidth: 1, borderColor: colors.borderMuted },
-  bodyText: { color: colors.text, fontSize: 13, lineHeight: 19, marginTop: 4 },
-  setRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  setLabel: { color: colors.textMuted, width: 48, fontSize: 12 },
-  setInput: { flex: 1, backgroundColor: colors.surface, color: colors.text, borderColor: colors.borderMuted, borderWidth: 1, borderRadius: 12, padding: 10 },
 });
