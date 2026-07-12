@@ -1,0 +1,38 @@
+import type { Exercise } from '../../types/training';
+
+export const fullBodyExercises: Exercise[] = [
+  {
+    id: 'farmer-carry',
+    name: 'Farmer Carry',
+    description: 'A loaded carry that builds full-body tension, grip strength, and conditioning.',
+    primaryMuscles: ['full-body', 'forearms', 'core'],
+    secondaryMuscles: ['traps', 'quadriceps', 'glutes'],
+    equipment: ['dumbbell', 'kettlebell'],
+    movementPattern: 'carry',
+    category: 'conditioning',
+    difficulty: 'beginner',
+    progressionType: 'weight',
+    defaultSets: 3,
+    defaultRepRange: '30-60 sec',
+    defaultRestSeconds: 90,
+    defaultWeightIncrement: 10,
+    alternativeExerciseIds: ['sled-push'],
+  },
+  {
+    id: 'sled-push',
+    name: 'Sled Push',
+    description: 'A loaded locomotion exercise for full-body conditioning and leg drive.',
+    primaryMuscles: ['full-body', 'quadriceps', 'glutes'],
+    secondaryMuscles: ['core', 'calves'],
+    equipment: ['sled'],
+    movementPattern: 'locomotion',
+    category: 'conditioning',
+    difficulty: 'intermediate',
+    progressionType: 'weight',
+    defaultSets: 4,
+    defaultRepRange: '20-40 yd',
+    defaultRestSeconds: 90,
+    defaultWeightIncrement: 10,
+    alternativeExerciseIds: ['farmer-carry'],
+  },
+];

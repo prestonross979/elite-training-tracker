@@ -4,8 +4,20 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { PROGRAM, PHASES } from './src/program';
 import { ExerciseLog, getRecommendation, todayName } from './src/logic';
 import { StatusBar } from 'expo-status-bar';
-
-type RootTab = 'workout' | 'history' | 'weight' | 'coach' | 'settings';
+import type { ActiveProgramState, TrainingPlan, WorkoutDay } from './src/types/training';
+import {
+  loadActiveProgram,
+  selectBuiltInPlan,
+  resetPlanToTemplate,
+  saveModifiedPlan,
+  recordWorkoutDayCompletion,
+  setSelectedCardioOption,
+  getSelectedCardioOption,
+} from './src/storage/programStorage';
+import ProgramsScreen from './src/screens/ProgramsScreen';
+import ActiveProgramScreen from './src/screens/ActiveProgramScreen';
+import { getExerciseById } from './src/data/exercises';
+import BottomTabs, { RootTab } from './src/components/BottomTabs';
 
 type AppState = {
   phase: typeof PHASES[number]['key'];
@@ -22,6 +34,8 @@ type AppState = {
     logs: ExerciseLog[];
     notes: string;
   }[];
+  // Keyed by workoutDayId -> exerciseId so logged history survives plan edits and resets.
+  programLogs: Record<string, Record<string, ExerciseLog>>;
 };
 
 const STORAGE_KEY = 'elite-gym-tracker-expo-v2';
@@ -54,6 +68,7 @@ function createDefaultState(): AppState {
     weighIns: [{ date: new Date().toISOString().slice(0, 10), weight: '' }],
     coachNotes: '',
     history: [],
+    programLogs: {},
   };
 }
 
@@ -71,6 +86,7 @@ function normalizeState(saved: Partial<AppState> | null): AppState {
     history: saved.history ?? [],
     selectedDay: saved.selectedDay ?? base.selectedDay,
     phase: saved.phase ?? base.phase,
+    programLogs: saved.programLogs ?? {},
   };
 
   PROGRAM.forEach((day) => {
@@ -97,6 +113,11 @@ export default function App() {
   const [tab, setTab] = useState<RootTab>('workout');
   const [openExercise, setOpenExercise] = useState<number | null>(null);
 
+  const [activeProgram, setActiveProgram] = useState<ActiveProgramState | null>(null);
+  const [programsView, setProgramsView] = useState<'browse' | 'active'>('browse');
+  const [selectedProgramDayId, setSelectedProgramDayId] = useState<string | null>(null);
+  const [selectedCardioOptionId, setSelectedCardioOptionId] = useState<string | undefined>(undefined);
+
   useEffect(() => {
     AsyncStorage.getItem(STORAGE_KEY)
       .then((raw) => {
@@ -105,11 +126,157 @@ export default function App() {
         }
       })
       .catch(() => {});
+
+    loadActiveProgram()
+      .then((loaded) => {
+        if (!loaded) return;
+        setActiveProgram(loaded);
+        const recommendedDayId = loaded.activePlan.workoutDays[loaded.currentDayIndex]?.id;
+        if (recommendedDayId) {
+          setSelectedProgramDayId(recommendedDayId);
+        }
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)).catch(() => {});
   }, [state]);
+
+  useEffect(() => {
+    if (!selectedProgramDayId) return;
+    getSelectedCardioOption(selectedProgramDayId)
+      .then(setSelectedCardioOptionId)
+      .catch(() => {});
+  }, [selectedProgramDayId]);
+
+  const selectedProgramDay: WorkoutDay | undefined = useMemo(() => {
+    if (!activeProgram || !selectedProgramDayId) return undefined;
+    return activeProgram.activePlan.workoutDays.find((day) => day.id === selectedProgramDayId);
+  }, [activeProgram, selectedProgramDayId]);
+
+  useEffect(() => {
+    if (!selectedProgramDay) return;
+
+    setState((prev) => {
+      const existing = prev.programLogs[selectedProgramDay.id] ?? {};
+      let changed = false;
+      const nextDayLogs = { ...existing };
+
+      selectedProgramDay.exercises.forEach((planned) => {
+        if (!nextDayLogs[planned.exerciseId]) {
+          changed = true;
+          nextDayLogs[planned.exerciseId] = {
+            name: getExerciseById(planned.exerciseId)?.name ?? planned.exerciseId,
+            completed: false,
+            notes: '',
+            sets: Array.from({ length: planned.sets }).map(() => ({ weight: '', reps: '' })),
+          };
+        }
+      });
+
+      if (!changed) return prev;
+
+      return {
+        ...prev,
+        programLogs: { ...prev.programLogs, [selectedProgramDay.id]: nextDayLogs },
+      };
+    });
+  }, [selectedProgramDay]);
+
+  const handleSelectPlan = (planId: string) => {
+    selectBuiltInPlan(planId).then((result) => {
+      if (!result) return;
+      setActiveProgram(result);
+      setSelectedProgramDayId(result.activePlan.workoutDays[result.currentDayIndex]?.id ?? null);
+      setProgramsView('active');
+    });
+  };
+
+  const handleResetProgramPlan = () => {
+    resetPlanToTemplate().then((result) => {
+      if (!result) return;
+      setActiveProgram(result);
+      setSelectedProgramDayId(result.activePlan.workoutDays[result.currentDayIndex]?.id ?? null);
+    });
+  };
+
+  const handleProgramPlanChange = (updatedPlan: TrainingPlan) => {
+    saveModifiedPlan(updatedPlan).then((result) => {
+      if (result) setActiveProgram(result);
+    });
+  };
+
+  const handleUpdateProgramSet = (exerciseId: string, setIndex: number, field: 'weight' | 'reps', value: string) => {
+    if (!selectedProgramDayId) return;
+    setState((prev) => {
+      const next = clone(prev);
+      const dayLogs = next.programLogs[selectedProgramDayId] ?? {};
+      const log = dayLogs[exerciseId];
+      if (!log) return prev;
+      log.sets[setIndex][field] = value;
+      next.programLogs[selectedProgramDayId] = dayLogs;
+      return next;
+    });
+  };
+
+  const handleUpdateProgramExerciseField = (exerciseId: string, field: 'completed' | 'notes', value: boolean | string) => {
+    if (!selectedProgramDayId) return;
+    setState((prev) => {
+      const next = clone(prev);
+      const dayLogs = next.programLogs[selectedProgramDayId] ?? {};
+      const log = dayLogs[exerciseId];
+      if (!log) return prev;
+      if (field === 'completed') {
+        log.completed = value as boolean;
+      } else {
+        log.notes = value as string;
+      }
+      next.programLogs[selectedProgramDayId] = dayLogs;
+      return next;
+    });
+  };
+
+  const handleSelectCardioOption = (optionId: string) => {
+    if (!selectedProgramDayId) return;
+    setSelectedCardioOptionId(optionId);
+    setSelectedCardioOption(selectedProgramDayId, optionId).catch(() => {});
+  };
+
+  const handleCompleteProgramDay = () => {
+    if (!activeProgram || !selectedProgramDay) return;
+    const completedAt = new Date().toISOString();
+    const dayLogs = state.programLogs[selectedProgramDay.id] ?? {};
+
+    setState((prev) => {
+      const next = clone(prev);
+      const nextDayLogs = next.programLogs[selectedProgramDay.id] ?? {};
+
+      Object.keys(nextDayLogs).forEach((exerciseId) => {
+        nextDayLogs[exerciseId].completed = true;
+      });
+
+      next.programLogs[selectedProgramDay.id] = nextDayLogs;
+      next.history = [
+        {
+          date: completedAt.slice(0, 10),
+          day: selectedProgramDay.id,
+          title: selectedProgramDay.name,
+          logs: Object.values(nextDayLogs),
+          notes: activeProgram.activePlan.name,
+        },
+        ...(next.history ?? []),
+      ];
+
+      return next;
+    });
+
+    recordWorkoutDayCompletion(selectedProgramDay.id, completedAt).then((result) => {
+      if (result) setActiveProgram(result);
+    });
+
+    Alert.alert('Workout Saved', 'Your program workout has been added to your history.');
+  };
 
   const selectedDay = useMemo(
     () => PROGRAM.find((d) => d.day === state.selectedDay) ?? PROGRAM[0],
@@ -226,8 +393,6 @@ export default function App() {
     return lines.join('\n');
   }, [state, selectedDay, selectedLogs, currentPhase.label, completion]);
 
-  const tabs: RootTab[] = ['workout', 'history', 'weight', 'coach', 'settings'];
-
   return (
     <SafeAreaView style={styles.app}>
       <StatusBar style="light" />
@@ -288,19 +453,7 @@ export default function App() {
           </View>
         </View>
 
-        <View style={styles.nav}>
-          {tabs.map((item) => (
-            <Pressable
-              key={item}
-              style={[styles.navItem, tab === item && styles.navItemActive]}
-              onPress={() => setTab(item)}
-            >
-              <Text style={[styles.navText, tab === item && styles.navTextActive]}>
-                {item}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        <BottomTabs activeTab={tab} onChangeTab={setTab} />
 
         {tab === 'workout' && (
           <View style={styles.section}>
@@ -411,6 +564,33 @@ export default function App() {
                 );
               })}
             </View>
+          </View>
+        )}
+
+        {tab === 'programs' && (
+          <View style={styles.section}>
+            {activeProgram && programsView === 'active' && selectedProgramDay ? (
+              <ActiveProgramScreen
+                activeProgram={activeProgram}
+                selectedDayId={selectedProgramDay.id}
+                onSelectDayId={setSelectedProgramDayId}
+                dayLogs={state.programLogs[selectedProgramDay.id] ?? {}}
+                onUpdateSet={handleUpdateProgramSet}
+                onUpdateExerciseField={handleUpdateProgramExerciseField}
+                onCompleteDay={handleCompleteProgramDay}
+                selectedCardioOptionId={selectedCardioOptionId}
+                onSelectCardioOption={handleSelectCardioOption}
+                onPlanChange={handleProgramPlanChange}
+                onResetPlan={handleResetProgramPlan}
+                onBrowsePlans={() => setProgramsView('browse')}
+              />
+            ) : (
+              <ProgramsScreen
+                activeProgram={activeProgram}
+                onSelectPlan={handleSelectPlan}
+                onOpenActiveProgram={() => setProgramsView('active')}
+              />
+            )}
           </View>
         )}
 
@@ -582,11 +762,6 @@ const styles = StyleSheet.create({
   secondaryButton: { backgroundColor: '#27272a', borderColor: '#52525b', borderWidth: 1, borderRadius: 18, padding: 13, alignItems: 'center' },
   secondaryButtonFull: { backgroundColor: '#27272a', borderColor: '#52525b', borderWidth: 1, borderRadius: 18, padding: 13, alignItems: 'center', marginTop: 8 },
   secondaryButtonText: { color: 'white', fontWeight: '700' },
-  nav: { flexDirection: 'row', gap: 6, marginTop: 12 },
-  navItem: { flex: 1, backgroundColor: '#27272a', borderRadius: 14, padding: 10, alignItems: 'center' },
-  navItemActive: { backgroundColor: 'white' },
-  navText: { color: 'white', fontSize: 10, fontWeight: '700', textTransform: 'capitalize' },
-  navTextActive: { color: '#09090b' },
   section: { gap: 12 },
   dayPills: { gap: 8, paddingVertical: 4 },
   dayPill: { backgroundColor: '#27272a', borderRadius: 16, paddingVertical: 10, paddingHorizontal: 16, borderWidth: 1, borderColor: '#52525b' },

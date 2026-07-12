@@ -1,8 +1,10 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { colors } from '../theme/colors';
 
-type RootTab =
+export type RootTab =
   | 'workout'
+  | 'programs'
   | 'history'
   | 'weight'
   | 'coach'
@@ -13,8 +15,11 @@ type Props = {
   onChangeTab: (tab: RootTab) => void;
 };
 
-const tabs: RootTab[] = [
+// Order drives the 3-column grid: items wrap after every 3, producing
+// [Workout, Programs, History] / [Weight, Coach, Settings].
+export const ROOT_TABS: RootTab[] = [
   'workout',
+  'programs',
   'history',
   'weight',
   'coach',
@@ -23,17 +28,17 @@ const tabs: RootTab[] = [
 
 export default function BottomTabs({ activeTab, onChangeTab }: Props) {
   return (
-    <View style={styles.nav}>
-      {tabs.map((tab) => {
+    <View style={styles.grid}>
+      {ROOT_TABS.map((tab) => {
         const active = activeTab === tab;
 
         return (
           <Pressable
             key={tab}
-            style={[styles.navItem, active && styles.navItemActive]}
+            style={[styles.tabItem, active && styles.tabItemActive]}
             onPress={() => onChangeTab(tab)}
           >
-            <Text style={[styles.navText, active && styles.navTextActive]}>
+            <Text style={[styles.tabLabel, active && styles.tabLabelActive]} numberOfLines={1}>
               {tab}
             </Text>
           </Pressable>
@@ -44,28 +49,36 @@ export default function BottomTabs({ activeTab, onChangeTab }: Props) {
 }
 
 const styles = StyleSheet.create({
-  nav: {
+  grid: {
     flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    marginBottom: 4,
   },
-  navItem: {
-    flex: 1,
-    backgroundColor: '#27272a',
+  tabItem: {
+    width: '31%',
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.borderMuted,
+    borderWidth: 1,
     borderRadius: 16,
-    padding: 12,
+    paddingVertical: 14,
+    marginBottom: 10,
     alignItems: 'center',
+    justifyContent: 'center',
   },
-  navItemActive: {
-    backgroundColor: 'white',
+  tabItemActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
   },
-  navText: {
-    color: 'white',
+  tabLabel: {
+    color: colors.text,
     fontSize: 12,
     fontWeight: '700',
     textTransform: 'capitalize',
+    textAlign: 'center',
   },
-  navTextActive: {
-    color: '#09090b',
+  tabLabelActive: {
+    color: colors.accentText,
   },
 });
