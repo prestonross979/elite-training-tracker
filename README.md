@@ -93,15 +93,19 @@ Example:
 ```text
 Good job. You reached the top of your target range.
 Increase the weight by 5 lbs for the next set.
-4. Run:
+```
+
+## Getting Started
+
+Run:
 
 ```bash
 npm install
 npm start
 ```
 
-5. A QR code will appear.
-6. Open Expo Go on your iPhone and scan the QR code.
+A QR code will appear.
+Open Expo Go on your iPhone and scan the QR code.
 
 Your app will open on your phone.
 
